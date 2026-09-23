@@ -1,6 +1,7 @@
 import { computeRoute, searchAlongRoute, proxyPhoto, queriesForGenre } from "./google.js";
 import { pickNext } from "./jev.js";
 import { generateTags, fallbackTags } from "./gemini.js";
+import { handleGenerateRoute } from "./generate-route.js";
 
 // 返す形を変えたら上げる。上げないと古いキャッシュが返り続ける
 const CACHE_VERSION = "v3";
@@ -22,8 +23,11 @@ export default {
         case "GET /":
           return json({
             name: "ekz-server",
-            endpoints: ["POST /search", "POST /tag", "POST /next", "GET /photo"],
+            endpoints: ["POST /generate-route", "POST /search", "POST /tag", "POST /next", "GET /photo"],
           });
+
+        case "POST /generate-route":
+          return await handleGenerateRoute(request, env);
 
         case "POST /search":
           return await handleSearch(request, env, ctx);

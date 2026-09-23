@@ -68,13 +68,84 @@ export async function computeRoute(key, origin, destination, travelMode = "DRIVE
   };
 }
 
+/** /generate-route 用。丸める前の秒・メートルを返す。既存 /search の形式は変えない。 */
+export async function computeDrivingRoute(key, origin, destination, waypoints = [], departureTime) {
+  let res;
+  try {
+    res = await fetch(ROUTES_URL, {
+      method: "POST",
+      headers: {
+        "X-Goog-Api-Key": key,
+        "X-Goog-FieldMask": [
+          "routes.duration", "routes.distanceMeters", "routes.polyline.encodedPolyline",
+          "routes.legs.startLocation", "routes.legs.endLocation",
+        ].join(","),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        origin: toWaypoint(origin),
+        destination: toWaypoint(destination),
+        intermediates: waypoints.map((candidate) => ({ placeId: candidate.id })),
+        travelMode: "DRIVE",
+        routingPreference: "TRAFFIC_AWARE",
+        departureTime,
+        languageCode: "ja",
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch {
+    throw new GoogleRouteError("UPSTREAM_ERROR", "Routes API に接続できませんでした。");
+  }
+  // Google の応答本文には入力値などが含まれ得るので、そのまま利用者に返さない。
+  if (!res.ok) throw new GoogleRouteError("UPSTREAM_ERROR", `Routes API がエラーを返しました（HTTP ${res.status}）。`);
+
+  let body;
+  try { body = await res.json(); } catch {
+    throw new GoogleRouteError("UPSTREAM_ERROR", "Routes API の応答を読み取れませんでした。");
+  }
+  if (!body || typeof body !== "object" || (body.routes != null && !Array.isArray(body.routes))) {
+    throw new GoogleRouteError("UPSTREAM_ERROR", "Routes API の応答形式が不正です。");
+  }
+  if (body.routes == null || body.routes.length === 0) {
+    throw new GoogleRouteError("ROUTE_NOT_FOUND", "指定された地点を通る車のルートが見つかりませんでした。");
+  }
+  const route = body.routes[0];
+  const validDuration = typeof route?.duration === "string" && /^\d+(?:\.\d+)?s$/.test(route.duration);
+  const durationSeconds = validDuration ? Number(route.duration.slice(0, -1)) : NaN;
+  if (!Number.isFinite(durationSeconds) || !Number.isInteger(route?.distanceMeters) || route.distanceMeters < 0 ||
+      typeof route?.polyline?.encodedPolyline !== "string" || !route.polyline.encodedPolyline) {
+    throw new GoogleRouteError("UPSTREAM_ERROR", "Routes API から時間・距離・経路を取得できませんでした。");
+  }
+  return {
+    durationSeconds,
+    distanceMeters: route.distanceMeters,
+    polyline: route.polyline.encodedPolyline,
+    originLocation: readLocation(route.legs?.[0]?.startLocation),
+    destinationLocation: readLocation(route.legs?.at(-1)?.endLocation),
+  };
+}
+
+export class GoogleRouteError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+function readLocation(location) {
+  const lat = location?.latLng?.latitude;
+  const lng = location?.latLng?.longitude;
+  return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+}
+
 /** "lat,lng" なら座標、そうでなければ住所や場所名として扱う */
 function toWaypoint(value) {
   const parts = String(value).split(",");
   if (parts.length === 2) {
-    const lat = parseFloat(parts[0]);
-    const lng = parseFloat(parts[1]);
-    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    const lat = Number(parts[0]);
+    const lng = Number(parts[1]);
+    if (parts.every((part) => part.trim()) && Number.isFinite(lat) && Number.isFinite(lng) &&
+        Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
       return { location: { latLng: { latitude: lat, longitude: lng } } };
     }
   }
@@ -91,7 +162,7 @@ function isWorthStopping(c) {
   return c.reviewCount >= 30 && c.rating >= 3.8;
 }
 
-export async function searchAlongRoute(key, polyline, queries = DEFAULT_QUERIES, baseMinutes = 0) {
+export async function searchAlongRoute(key, polyline, queries = DEFAULT_QUERIES, baseMinutes = 0, options = {}) {
   const fieldMask = [
     "places.id",
     "places.displayName",
@@ -108,6 +179,7 @@ export async function searchAlongRoute(key, polyline, queries = DEFAULT_QUERIES,
     queries.map((q) =>
       fetch(PLACES_URL, {
         method: "POST",
+        signal: options.signal,
         headers: {
           "X-Goog-Api-Key": key,
           "X-Goog-FieldMask": fieldMask,
@@ -119,7 +191,11 @@ export async function searchAlongRoute(key, polyline, queries = DEFAULT_QUERIES,
           pageSize: 20,
           searchAlongRouteParameters: { polyline: { encodedPolyline: polyline } },
         }),
-      }).then(async (r) => (r.ok ? r.json() : { places: [], error: await r.text() })),
+      }).then(async (r) => (r.ok ? r.json() : { places: [], error: await r.text() }))
+        .catch((error) => {
+          if (!options.allowPartial) throw error;
+          return { places: [], error: "Places API の検索に失敗しました" };
+        }),
     ),
   );
 
