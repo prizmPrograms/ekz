@@ -12,7 +12,10 @@ export type RouteEndpoint = {
 }
 
 export type RouteSummary = {
+  /** 滞在時間を含む合計所要時間。通常ルートでは運転時間と同じ */
   durationMinutes: number
+  /** 経由地間を運転する時間。おすすめルートで返る */
+  drivingMinutes?: number
   distanceMeters: number
   /** 区間ごとの所要時間(出発→経由地1→…→目的地)。無いこともある */
   legMinutes?: number[]

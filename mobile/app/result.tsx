@@ -87,7 +87,7 @@ export default function ResultScreen() {
           <View style={styles.summary}>
             <Text style={styles.duration}>{formatDuration(route.recommendedRoute.durationMinutes)}</Text>
             <Text style={styles.extra}>+{route.recommendedRoute.extraMinutes}分</Text>
-            <Text style={styles.muted}>通常 {formatDuration(route.normalRoute.durationMinutes)}・{(route.recommendedRoute.distanceMeters / 1000).toFixed(1)} km</Text>
+            <Text style={styles.muted}>通常 {formatDuration(route.normalRoute.durationMinutes)}・移動 {formatDuration(route.recommendedRoute.drivingMinutes ?? route.recommendedRoute.durationMinutes)}・{(route.recommendedRoute.distanceMeters / 1000).toFixed(1)} km</Text>
           </View>
 
           <View>

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { editRoutePlan, generateRoutePlan, RouteServiceError } from "../src/route-service.js";
+import { editRoutePlan, generateRoutePlan, genreForPreferences, matchesPreferences, RouteServiceError } from "../src/route-service.js";
 
 const candidates = [
   {
@@ -11,6 +11,7 @@ const candidates = [
     lng: 135.2,
     rating: 4.6,
     reviewCount: 400,
+    stayMinutes: 5,
     detourMinutes: 12,
     routeRatio: 0.4,
     offRouteKm: 1.2,
@@ -23,6 +24,7 @@ const candidates = [
     lng: 135.18,
     rating: 4.4,
     reviewCount: 240,
+    stayMinutes: 5,
     detourMinutes: 15,
     routeRatio: 0.7,
     offRouteKm: 1.5,
@@ -35,6 +37,7 @@ const candidates = [
     lng: 135.16,
     rating: 4.2,
     reviewCount: 180,
+    stayMinutes: 5,
     detourMinutes: 20,
     routeRatio: 0.8,
     offRouteKm: 2,
@@ -68,9 +71,10 @@ test("generateRoutePlan returns an exact route containing selected waypoints", a
   const result = await generateRoutePlan(generateInput, dependencies());
 
   assert.equal(result.normalRoute.durationMinutes, 44);
-  assert.equal(result.recommendedRoute.durationMinutes, 62);
+  assert.equal(result.recommendedRoute.drivingMinutes, 62);
+  assert.equal(result.recommendedRoute.durationMinutes, 72);
   assert.equal(result.recommendedRoute.distanceMeters, 42100);
-  assert.equal(result.recommendedRoute.extraMinutes, 18);
+  assert.equal(result.recommendedRoute.extraMinutes, 28);
   assert.deepEqual(result.waypoints.map((waypoint) => waypoint.placeId), ["place-a", "place-b"]);
   assert.match(result.googleMapsUrl, /waypoints=34\.68%2C135\.2%7C34\.67%2C135\.18/);
 });
@@ -84,7 +88,8 @@ test("generateRoutePlan drops to one waypoint when two exceed the time constrain
   }));
 
   assert.equal(result.waypoints.length, 1);
-  assert.equal(result.recommendedRoute.durationMinutes, 58);
+  assert.equal(result.recommendedRoute.drivingMinutes, 58);
+  assert.equal(result.recommendedRoute.durationMinutes, 63);
 });
 
 test("generateRoutePlan uses ranked fallback when TypeSafe selection fails", async () => {
@@ -106,7 +111,8 @@ test("editRoutePlan deletes a waypoint and recalculates the route", async () => 
   }, dependencies());
 
   assert.deepEqual(result.waypoints.map((waypoint) => waypoint.placeId), ["place-b"]);
-  assert.equal(result.recommendedRoute.durationMinutes, 53);
+  assert.equal(result.recommendedRoute.drivingMinutes, 53);
+  assert.equal(result.recommendedRoute.durationMinutes, 58);
   assert.match(result.reason, /海辺の公園を外し/);
 });
 
@@ -231,6 +237,35 @@ test("route responses keep leg minutes and waypoint arrival details", async () =
   }));
 
   assert.deepEqual(result.recommendedRoute.legMinutes, [20, 30]);
+  assert.equal(result.recommendedRoute.drivingMinutes, 50);
+  assert.equal(result.recommendedRoute.durationMinutes, 55);
   assert.equal(typeof result.waypoints[0].stayMinutes, "number");
   assert.ok("priceRange" in result.waypoints[0]);
+});
+
+test("route total includes every stay and matches the displayed arrival time", async () => {
+  const scenic = [
+    { ...candidates[0], stayMinutes: 30 },
+    { ...candidates[2], stayMinutes: 25 },
+  ];
+  const result = await generateRoutePlan({
+    ...generateInput,
+    preferences: ["scenic"],
+    freeText: "",
+    timeConstraint: { type: "none" },
+  }, dependencies({
+    search: async () => ({ baseMinutes: 11, distanceKm: 6.6, candidates: scenic }),
+    compute: async () => ({ durationMinutes: 14, distanceMeters: 6600, legMinutes: [7, 7] }),
+  }));
+
+  assert.equal(result.waypoints.length, 1, "short routes should not receive two stops");
+  assert.equal(result.recommendedRoute.drivingMinutes, 14);
+  assert.equal(result.recommendedRoute.durationMinutes, 44);
+  assert.equal(result.recommendedRoute.extraMinutes, 33);
+});
+
+test("preference matching rejects restaurants returned for a scenic park query", () => {
+  assert.equal(matchesPreferences({ name: "桃山公園", category: "公園" }, ["scenic"]), true);
+  assert.equal(matchesPreferences({ name: "魚食処 緑地公園店", category: "和食店" }, ["scenic"]), false);
+  assert.deepEqual(genreForPreferences(["scenic", "cafe"]), ["sweets", "view"]);
 });

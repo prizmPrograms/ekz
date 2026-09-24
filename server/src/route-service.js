@@ -24,6 +24,16 @@ const PREFERENCE_LABELS = {
   quiet: "静かな場所",
 };
 
+const PREFERENCE_CATEGORY_PATTERNS = {
+  scenic: /公園|庭園|展望|景勝|観光|自然|海岸|ビーチ|山|滝|湖|史跡|神社|寺|城/,
+  ocean: /海岸|ビーチ|マリーナ|港|海浜|水族館|展望|公園|観光/,
+  night_view: /展望|タワー|公園|庭園|観光/,
+  mountain: /山|高原|峠|渓谷|自然|展望|公園/,
+  cafe: /カフェ|喫茶|コーヒー|スイーツ|菓子|ベーカリー|パン/,
+  gourmet: /レストラン|料理|食堂|飲食|ラーメン|寿司|焼肉|居酒屋|ダイニング/,
+  hot_spring: /温泉|銭湯|スパ|浴場/,
+};
+
 export class RouteServiceError extends Error {
   constructor(code, message, status = 400) {
     super(message);
@@ -36,10 +46,11 @@ export class RouteServiceError extends Error {
 export async function generateRoutePlan(input, deps) {
   const request = validateGenerateRequest(input);
   const search = await deps.search(request.origin, request.destination, genreForPreferences(request.preferences));
-  const pool = candidatePool(search.candidates, search.baseMinutes, request.timeConstraint);
+  const pool = candidatePool(search.candidates, search.baseMinutes, request.timeConstraint, request.preferences);
   if (pool.length === 0) throw noCandidates();
 
-  const picked = await pickWaypoints(pool, request.waypointCount, requestText(request), deps.pick);
+  const waypointCount = search.baseMinutes < 30 ? 1 : request.waypointCount;
+  const picked = await pickWaypoints(pool, waypointCount, requestText(request), deps.pick);
   const fitted = await fitGeneratedRoute(request, search, picked.candidates, pool, deps.compute);
   const waypoints = await Promise.all(fitted.candidates.map((candidate) => publicWaypoint(candidate, deps)));
 
@@ -87,7 +98,7 @@ export async function editRoutePlan(input, deps) {
     ...current.waypoints.map((waypoint) => waypoint.placeId),
     ...request.action.excludedPlaceIds,
   ]);
-  const remaining = candidatePool(search.candidates, current.normalRoute.durationMinutes, request.timeConstraint)
+  const remaining = candidatePool(search.candidates, current.normalRoute.durationMinutes, request.timeConstraint, request.preferences)
     .filter((candidate) => !excluded.has(candidate.id));
   if (remaining.length === 0) throw noCandidates();
 
@@ -109,7 +120,7 @@ export async function editRoutePlan(input, deps) {
     const proposed = [...current.waypoints];
     proposed[index] = candidate;
     const exact = await deps.compute(origin, destination, proposed);
-    if (exact.durationMinutes <= maxMinutes) {
+    if (totalRouteMinutes(exact, proposed) <= maxMinutes) {
       replacement = candidate;
       recommended = exact;
       break;
@@ -176,14 +187,15 @@ export function validateEditRequest(input) {
 }
 
 export function genreForPreferences(preferences) {
-  if (preferences.includes("cafe")) return "sweets";
-  if (preferences.includes("gourmet")) return "meal";
-  if (preferences.some((value) => ["scenic", "ocean", "night_view", "mountain"].includes(value))) return "view";
-  if (preferences.some((value) => value === "hot_spring" || value === "quiet")) return "rest";
-  return undefined;
+  const genres = [];
+  if (preferences.includes("cafe")) genres.push("sweets");
+  if (preferences.includes("gourmet")) genres.push("meal");
+  if (preferences.some((value) => ["scenic", "ocean", "night_view", "mountain"].includes(value))) genres.push("view");
+  if (preferences.some((value) => value === "hot_spring" || value === "quiet")) genres.push("rest");
+  return genres.length > 0 ? [...new Set(genres)].sort() : undefined;
 }
 
-export function candidatePool(candidates, baseMinutes, constraint) {
+export function candidatePool(candidates, baseMinutes, constraint, preferences = []) {
   const maximum = maximumExtraMinutes(baseMinutes, constraint);
   return [...(candidates ?? [])]
     .filter((candidate) => Number.isFinite(candidate.lat) && Number.isFinite(candidate.lng))
@@ -194,6 +206,7 @@ export function candidatePool(candidates, baseMinutes, constraint) {
         && (candidate.offRouteKm ?? 0) <= 6
         && (candidate.detourMinutes ?? 0) <= maximum;
     })
+    .filter((candidate) => matchesPreferences(candidate, preferences))
     .sort((a, b) => {
       const ratingScore = (b.rating ?? 0) - (a.rating ?? 0);
       if (ratingScore !== 0) return ratingScore;
@@ -255,7 +268,7 @@ async function fitGeneratedRoute(request, search, selected, pool, compute) {
   for (const candidates of attempts) {
     const ordered = [...candidates].sort(routeOrder);
     const route = await compute(request.origin, request.destination, ordered);
-    if (route.durationMinutes <= maximum) return { candidates: ordered, route };
+    if (totalRouteMinutes(route, ordered) <= maximum) return { candidates: ordered, route };
   }
   throw noCandidates();
 }
@@ -286,19 +299,39 @@ async function publicWaypoint(candidate, deps) {
 
 function routeResponse({ origin, destination, normalRoute, recommendedRoute, waypoints, reason, mapsOrigin, mapsDestination }) {
   const normal = normalizedSummary(normalRoute);
-  const recommended = normalizedSummary(recommendedRoute);
+  const driving = normalizedSummary(recommendedRoute);
+  const durationMinutes = totalRouteMinutes(driving, waypoints);
   return {
     origin,
     destination,
     normalRoute: normal,
     recommendedRoute: {
-      ...recommended,
-      extraMinutes: Math.max(0, recommended.durationMinutes - normal.durationMinutes),
+      ...driving,
+      drivingMinutes: driving.durationMinutes,
+      durationMinutes,
+      extraMinutes: Math.max(0, durationMinutes - normal.durationMinutes),
     },
     waypoints,
     reason,
     googleMapsUrl: buildGoogleMapsUrl(mapsOrigin, mapsDestination, waypoints),
   };
+}
+
+function totalRouteMinutes(route, waypoints) {
+  const drivingMinutes = Math.max(0, Math.round(route.durationMinutes ?? route.baseMinutes ?? 0));
+  const stayMinutes = waypoints.reduce((total, waypoint) => total + waypointStayMinutes(waypoint), 0);
+  return drivingMinutes + stayMinutes;
+}
+
+function waypointStayMinutes(waypoint) {
+  return Math.max(0, Math.round(waypoint.stayMinutes ?? stayMinutesFor(waypoint.category ?? "")));
+}
+
+export function matchesPreferences(candidate, preferences) {
+  const concrete = preferences.filter((preference) => PREFERENCE_CATEGORY_PATTERNS[preference]);
+  if (concrete.length === 0) return true;
+  const category = candidate.category ?? "";
+  return concrete.some((preference) => PREFERENCE_CATEGORY_PATTERNS[preference].test(category));
 }
 
 function normalizedSummary(route) {

@@ -79,9 +79,10 @@ scenic, ocean, night_view, mountain, cafe, gourmet, hot_spring, detour, quiet
     "distanceMeters": 38700
   },
   "recommendedRoute": {
-    "durationMinutes": 62,
+    "durationMinutes": 92,
+    "drivingMinutes": 62,
     "distanceMeters": 42100,
-    "extraMinutes": 18
+    "extraMinutes": 48
   },
   "waypoints": [
     {
@@ -94,7 +95,8 @@ scenic, ocean, night_view, mountain, cafe, gourmet, hot_spring, detour, quiet
       "reviewCount": 210,
       "photoUrl": "https://ekz-server.example/photo?name=places%2F...",
       "tags": ["海が見える", "落ち着く"],
-      "detourMinutes": 18
+      "detourMinutes": 18,
+      "stayMinutes": 30
     }
   ],
   "reason": "海沿いで評価が高く、追加30分以内に収まる場所を選びました。",
@@ -105,7 +107,9 @@ scenic, ocean, night_view, mountain, cafe, gourmet, hot_spring, detour, quiet
 ### Response field rules
 
 - `origin.lat/lng`と`destination.lat/lng`は取得できない場合のみ`null`。
-- `normalRoute`は経由地なし、`recommendedRoute`は全経由地を含むRoutes APIの計算結果。
+- `normalRoute.durationMinutes`は経由地なしの運転時間。
+- `recommendedRoute.drivingMinutes`は全経由地を含むRoutes APIの運転時間。
+- `recommendedRoute.durationMinutes`は運転時間と全経由地の`stayMinutes`を足した合計時間。
 - `extraMinutes`は`recommendedRoute.durationMinutes - normalRoute.durationMinutes`。負数にしない。
 - `waypoints`は実際に走行する順番で並べる。
 - `waypoint.lat/lng`はGoogle Maps URL生成に必要なため必須。

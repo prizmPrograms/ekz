@@ -25,6 +25,9 @@ export const GENRE_QUERIES = {
 export const DEFAULT_QUERIES = ["ランチ", "カフェ", "展望台", "観光スポット", "道の駅"];
 
 export function queriesForGenre(genre) {
+  if (Array.isArray(genre)) {
+    return [...new Set(genre.flatMap((value) => GENRE_QUERIES[value] ?? []))];
+  }
   if (!genre) return DEFAULT_QUERIES;
   return GENRE_QUERIES[genre] ?? DEFAULT_QUERIES;
 }
